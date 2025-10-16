@@ -1,109 +1,126 @@
 import streamlit as st
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
+from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import pandas as pd
 import tempfile
 
 st.set_page_config(layout="wide")
-st.title("🕸️ Selenium Web Extractor / Mini Browser")
+st.title("🌐 Playwright Mini-Browser & Web Extractor")
 
-# --- Sidebar options ---
-st.sidebar.header("Extraction Settings")
-url_input = st.sidebar.text_input("Enter URL", "https://www.w3schools.com/html/html_tables.asp")
-extract_text = st.sidebar.checkbox("Extract Text", value=True)
-extract_tables = st.sidebar.checkbox("Extract Tables", value=True)
-extract_links = st.sidebar.checkbox("Extract Links", value=False)
-extract_images = st.sidebar.checkbox("Extract Image URLs", value=False)
+# ---------------- Sidebar ----------------
+st.sidebar.header("Settings")
+extract_text = st.sidebar.checkbox("Extract Text", True)
+extract_tables = st.sidebar.checkbox("Extract Tables", True)
+extract_links = st.sidebar.checkbox("Extract Links", True)
+extract_images = st.sidebar.checkbox("Extract Image URLs", False)
+custom_selector = st.sidebar.text_input("Custom CSS/XPath Selector (optional)", "")
 
-# Navigation buttons
+# ---------------- Session State ----------------
 if 'history' not in st.session_state:
     st.session_state.history = []
 if 'current_index' not in st.session_state:
     st.session_state.current_index = -1
+if 'current_url' not in st.session_state:
+    st.session_state.current_url = "https://www.w3schools.com/html/html_tables.asp"
 
+# ---------------- Navigation Functions ----------------
 def navigate(url):
     st.session_state.history = st.session_state.history[:st.session_state.current_index+1]
     st.session_state.history.append(url)
     st.session_state.current_index += 1
+    st.session_state.current_url = url
 
 def go_back():
     if st.session_state.current_index > 0:
         st.session_state.current_index -= 1
-        return st.session_state.history[st.session_state.current_index]
-    return None
+        st.session_state.current_url = st.session_state.history[st.session_state.current_index]
 
 def go_forward():
     if st.session_state.current_index < len(st.session_state.history)-1:
         st.session_state.current_index += 1
-        return st.session_state.history[st.session_state.current_index]
-    return None
+        st.session_state.current_url = st.session_state.history[st.session_state.current_index]
 
-# Buttons
-col1, col2, col3 = st.columns(3)
+# ---------------- Navigation Buttons ----------------
+col1, col2, col3, col4 = st.columns([1,1,2,6])
 with col1:
-    if st.button("Back"):
-        url_input = go_back()
+    if st.button("⬅ Back"):
+        go_back()
 with col2:
-    if st.button("Forward"):
-        url_input = go_forward()
+    if st.button("Forward ➡"):
+        go_forward()
 with col3:
+    url_input = st.text_input("Enter URL", st.session_state.current_url)
     if st.button("Go"):
         navigate(url_input)
+with col4:
+    st.write(f"Current URL: {st.session_state.current_url}")
 
-if url_input:
-    st.info(f"Loading: {url_input}")
+# ---------------- Playwright Extraction ----------------
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True)
+    page = browser.new_page()
+    page.goto(st.session_state.current_url)
+    page.wait_for_timeout(2000)  # wait for JS
 
-    # Setup Selenium (headless for Streamlit Cloud)
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    
-    try:
-        driver.get(url_input)
-        html = driver.page_source
-        soup = BeautifulSoup(html, "lxml")
-        
-        # Extract Text
-        if extract_text:
-            text = soup.get_text(separator="\n")
-            st.subheader("Page Text")
-            st.text(text[:3000] + "\n...")  # first 3000 chars
-        
-        # Extract Tables
-        if extract_tables:
+    # Screenshot
+    screenshot_path = tempfile.NamedTemporaryFile(suffix=".png").name
+    page.screenshot(path=screenshot_path)
+    st.image(screenshot_path, caption="Page Screenshot", use_column_width=True)
+
+    html = page.content()
+    soup = BeautifulSoup(html, "lxml")
+
+    # ---------------- Extract Text ----------------
+    if extract_text:
+        text = soup.get_text(separator="\n")
+        with st.expander("Page Text"):
+            st.text(text[:5000] + "\n...")
+
+    # ---------------- Extract Tables ----------------
+    if extract_tables:
+        try:
             tables = pd.read_html(html)
             st.subheader("Tables Found")
             for i, table in enumerate(tables):
                 st.write(f"Table {i+1}")
                 st.dataframe(table)
-                # Download as CSV
-                csv = table.to_csv(index=False)
-                st.download_button(f"Download Table {i+1} CSV", csv, f"table_{i+1}.csv", "text/csv")
-        
-        # Extract Links
-        if extract_links:
-            links = [a.get("href") for a in soup.find_all("a") if a.get("href")]
-            st.subheader("Links Found")
-            st.write(links)
-            links_df = pd.DataFrame(links, columns=["Links"])
-            st.download_button("Download Links CSV", links_df.to_csv(index=False), "links.csv", "text/csv")
-        
-        # Extract Images
-        if extract_images:
-            images = [img.get("src") for img in soup.find_all("img") if img.get("src")]
-            st.subheader("Images Found")
-            st.write(images)
+                st.download_button(f"Download Table {i+1} CSV", table.to_csv(index=False), f"table_{i+1}.csv", "text/csv")
+        except:
+            st.warning("No tables found.")
+
+    # ---------------- Extract Links (Clickable) ----------------
+    if extract_links:
+        links = [(a.get("href"), a.text) for a in soup.find_all("a") if a.get("href")]
+        st.subheader("Links Found")
+        for href, text_link in links:
+            if st.button(f"{text_link}"):
+                if href.startswith("http"):
+                    navigate(href)
+                else:
+                    base_url = "/".join(st.session_state.current_url.split("/")[:3])
+                    navigate(base_url + href)
+
+    # ---------------- Extract Images ----------------
+    if extract_images:
+        images = [img.get("src") for img in soup.find_all("img") if img.get("src")]
+        st.subheader("Images Found")
+        st.write(images)
+        if images:
             img_df = pd.DataFrame(images, columns=["Image URLs"])
             st.download_button("Download Image URLs CSV", img_df.to_csv(index=False), "images.csv", "text/csv")
-        
-        st.success("Extraction Complete ✅")
-        
-    except Exception as e:
-        st.error(f"Error loading page: {e}")
-    finally:
-        driver.quit()
+
+    # ---------------- Custom Selector ----------------
+    if custom_selector:
+        st.subheader("Custom Selector Results")
+        try:
+            elements = page.query_selector_all(custom_selector)
+            custom_data = [el.inner_text().strip() for el in elements if el.inner_text().strip()]
+            st.write(custom_data)
+            if custom_data:
+                custom_df = pd.DataFrame(custom_data, columns=["Custom Extract"])
+                st.download_button("Download Custom Extract CSV", custom_df.to_csv(index=False), "custom.csv", "text/csv")
+        except Exception as e:
+            st.error(f"Error with custom selector: {e}")
+
+    st.success("Extraction Complete ✅")
+    browser.close()
