@@ -1,6 +1,6 @@
 streamlit
-pandas
 playwright
 beautifulsoup4
 lxml
+pandas
 openpyxl

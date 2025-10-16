@@ -1,1 +1,6 @@
-playwright
+libnss3
+libxss1
+libasound2
+libgbm1
+libgtk-3-0
+libxshmfence1
